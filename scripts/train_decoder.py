@@ -19,7 +19,7 @@ class RAGDataset(Dataset):
         self.max_len = max_len
         self.mode = mode
         
-        # Pre-calculate embeddings and contexts for speed
+        # Pre-calculate embeddings and context for speed
         self.contexts = []
         print("Pre-retrieving contexts...")
         self.encoder.eval()
