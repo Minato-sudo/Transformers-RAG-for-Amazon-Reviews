@@ -152,16 +152,26 @@ class TransformerDecoder(nn.Module):
         return self.fc_out(x)
 
 class CausalTransformer(nn.Module):
+    """
+    Decoder-only Transformer architecture (similar to GPT).
+    Used for autoregressive explanation generation in the RAG pipeline.
+    """
     def __init__(self, vocab_size, d_model, num_heads, d_ff, num_layers, dropout=0.1):
         super().__init__()
         self.embedding = nn.Embedding(vocab_size, d_model)
         self.pos_encoding = PositionalEncoding(d_model)
+        
+        # Stacked Decoder-only blocks (Causal self-attention + Feed-forward)
+        # We use EncoderBlock with a causal mask to implement GPT-style causal attention.
         self.layers = nn.ModuleList([EncoderBlock(d_model, num_heads, d_ff, dropout) for _ in range(num_layers)])
+        
         self.fc_out = nn.Linear(d_model, vocab_size)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x, mask=None):
+        # x: (batch_size, seq_len)
+        # mask: Causal mask (lower triangular) to prevent attending to future tokens
         x = self.dropout(self.pos_encoding(self.embedding(x)))
         for layer in self.layers:
-            x = layer(x, mask)
+            x = layer(x, mask) # Residual connections and layer norm are inside EncoderBlock
         return self.fc_out(x)

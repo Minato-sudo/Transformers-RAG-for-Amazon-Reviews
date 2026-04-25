@@ -6,7 +6,13 @@ import os
 from scripts.transformer_scratch import MultiTaskEncoder, CausalTransformer
 from scripts.retrieval import RetrievalModule
 
-def generate_improved(model, vocab, prompt, max_gen_len=40, min_gen_len=10, temperature=0.7, top_k=50, device='cpu'):
+def clean_generation(text):
+    SPECIAL_TOKENS = ['<unk>', '<pad>', '<sos>', '<eos>', '<ret>', '<rev>', '<snt>', '<cat>', '<exp>']
+    for token in SPECIAL_TOKENS:
+        text = text.replace(token, '')
+    return ' '.join(text.split()).strip()
+
+def generate_improved(model, vocab, prompt, max_len=40, min_len=12, temperature=0.7, top_k=50, repetition_penalty=1.3, device='cpu'):
     model.eval()
     tokens = prompt.split()
     indices = [vocab.get(t, vocab['<unk>']) for t in tokens]
@@ -14,9 +20,9 @@ def generate_improved(model, vocab, prompt, max_gen_len=40, min_gen_len=10, temp
     
     input_tensor = torch.tensor(indices).unsqueeze(0).to(device)
     eos_token_id = vocab['<eos>']
+    generated_indices = indices.copy()
     
-    generated = []
-    for step in range(max_gen_len):
+    for step in range(max_len):
         seq_len = input_tensor.size(1)
         mask = torch.tril(torch.ones(seq_len, seq_len)).to(device)
         
@@ -24,13 +30,15 @@ def generate_improved(model, vocab, prompt, max_gen_len=40, min_gen_len=10, temp
             logits = model(input_tensor, mask=mask)
             next_token_logits = logits[0, -1, :]
             
-            for token in set(generated[-5:]): # penalize recent tokens
-                next_token_logits[token] /= 1.5
+            # Repetition penalty
+            for token_id in set(generated_indices):
+                next_token_logits[token_id] /= repetition_penalty
+            
+            # Block EOS until min_len
+            if step < min_len:
+                next_token_logits[eos_token_id] = float('-inf')
             
             next_token_logits = next_token_logits / temperature
-            
-            if step < min_gen_len:
-                next_token_logits[eos_token_id] = float('-inf')
             
             top_v, top_i = torch.topk(next_token_logits, min(top_k, next_token_logits.size(-1)))
             probs = F.softmax(top_v, dim=-1)
@@ -40,11 +48,18 @@ def generate_improved(model, vocab, prompt, max_gen_len=40, min_gen_len=10, temp
         if next_token == eos_token_id:
             break
             
-        generated.append(next_token)
+        generated_indices.append(next_token)
         input_tensor = torch.cat([input_tensor, torch.tensor([[next_token]]).to(device)], dim=1)
         
     inv_vocab = {v: k for k, v in vocab.items()}
-    return " ".join([inv_vocab[idx] for idx in generated])
+    full_text = " ".join([inv_vocab[idx] for idx in generated_indices])
+    # Extract only the generated part (after <exp>)
+    if '<exp>' in full_text:
+        gen_part = full_text.split('<exp>')[-1]
+    else:
+        gen_part = full_text
+    
+    return clean_generation(gen_part)
 
 def compute_perplexity(decoder, data_split, vocab, retriever, encoder, device, use_rag=True, limit=200):
     decoder.eval()
@@ -82,7 +97,7 @@ def run_ablation():
     
     encoder = MultiTaskEncoder(len(vocab), 128, 4, 512, 2).to(device)
     encoder.load_state_dict(torch.load(os.path.join(base_path, 'models', 'encoder_weights.pt')))
-    decoder = CausalTransformer(len(vocab), 256, 8, 1024, 3).to(device)
+    decoder = CausalTransformer(len(vocab), 256, 8, 1024, 4).to(device)
     decoder.load_state_dict(torch.load(os.path.join(base_path, 'models', 'decoder_weights.pt')))
     retriever = RetrievalModule(os.path.join(base_path, 'results', 'train_embeddings.pt'), data['train'][3])
     

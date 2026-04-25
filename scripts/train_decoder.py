@@ -90,31 +90,39 @@ def train_decoder():
     train_loader = DataLoader(train_ds, batch_size=32, shuffle=True)
     val_loader = DataLoader(val_ds, batch_size=32)
     
-    model = CausalTransformer(len(vocab), d_model=256, num_heads=8, d_ff=1024, num_layers=3).to(device)
+    model = CausalTransformer(len(vocab), d_model=256, num_heads=8, d_ff=1024, num_layers=4).to(device)
     
     criterion = nn.CrossEntropyLoss(ignore_index=vocab['<pad>'])
-    optimizer = optim.Adam(model.parameters(), lr=0.0003) # Slightly lower LR
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=3, gamma=0.5)
+    optimizer = optim.AdamW(model.parameters(), lr=5e-4, weight_decay=0.01)
     
-    num_epochs = 10
+    num_epochs = 15
+    MAX_STEPS = num_epochs * len(train_loader)
+    
+    def get_lr(step, warmup_steps=200):
+        if step < warmup_steps:
+            return step / warmup_steps
+        return max(0.1, 0.5 * (1 + math.cos(math.pi * step / MAX_STEPS)))
+    
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, get_lr)
     best_val_loss = float('inf')
     
+    print(f"Starting Training for {num_epochs} epochs...")
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0
         for batch_in, batch_tgt in train_loader:
             batch_in, batch_tgt = batch_in.to(device), batch_tgt.to(device)
             
-            # Causal Mask
-            seq_len = batch_in.size(1)
-            mask = torch.tril(torch.ones(seq_len, seq_len)).to(device)
+            mask = torch.tril(torch.ones(batch_in.size(1), batch_in.size(1))).to(device)
             
             optimizer.zero_grad()
             logits = model(batch_in, mask=mask)
             
             loss = criterion(logits.view(-1, len(vocab)), batch_tgt.view(-1))
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # Gradient clipping
             optimizer.step()
+            scheduler.step()
             total_loss += loss.item()
             
         avg_loss = total_loss / len(train_loader)
@@ -132,8 +140,6 @@ def train_decoder():
         avg_val_loss = val_loss / len(val_loader)
         perplexity = math.exp(avg_val_loss)
         print(f"Epoch {epoch+1}, Train Loss: {avg_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Val PPL: {perplexity:.4f}")
-        
-        scheduler.step()
         
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
