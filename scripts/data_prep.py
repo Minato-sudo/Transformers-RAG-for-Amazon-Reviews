@@ -8,7 +8,7 @@ import numpy as np
 from collections import Counter
 from sklearn.model_selection import train_test_split
 
-# Set seeds for reproducibility
+# Set seed for reproducibility
 random.seed(42)
 np.random.seed(42)
 torch.manual_seed(42)
