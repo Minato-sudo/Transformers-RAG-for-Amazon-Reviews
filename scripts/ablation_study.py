@@ -24,7 +24,6 @@ def generate_improved(model, vocab, prompt, max_gen_len=40, min_gen_len=10, temp
             logits = model(input_tensor, mask=mask)
             next_token_logits = logits[0, -1, :]
             
-            # Repetition penalty
             for token in set(generated[-5:]): # penalize recent tokens
                 next_token_logits[token] /= 1.5
             
