@@ -88,7 +88,7 @@ def train():
     torch.save(model.state_dict(), weights_path)
     print(f"Weights saved to {weights_path}")
     
-    # Save training embeddings for Part B
+    # Save training embedding for Part B
     model.eval()
     all_train_embeddings = []
     train_loader_full = DataLoader(TensorDataset(train_X, train_Ys, train_Yc), batch_size=batch_size, shuffle=False)
