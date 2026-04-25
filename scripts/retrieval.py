@@ -7,7 +7,7 @@ class RetrievalModule:
         self.train_texts = train_texts
 
     def retrieve(self, query_embedding, k=3):
-        # query_embedding: (1, d_model) or (d_model)
+        # query_embedding: (1, d_model) or d_model
         if query_embedding.dim() == 1:
             query_embedding = query_embedding.unsqueeze(0)
             
