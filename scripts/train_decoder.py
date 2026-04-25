@@ -146,7 +146,7 @@ def train_decoder():
             torch.save(model.state_dict(), os.path.join(base_path, 'models', 'decoder_weights.pt'))
             print("Model improved, weights saved.")
 
-    # Save Decoder Weights
+    # Save Decoder Weight
     torch.save(model.state_dict(), os.path.join(base_path, 'models', 'decoder_weights.pt'))
     print("Decoder weights saved.")
 

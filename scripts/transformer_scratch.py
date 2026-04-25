@@ -162,7 +162,7 @@ class CausalTransformer(nn.Module):
         self.pos_encoding = PositionalEncoding(d_model)
         
         # Stacked Decoder-only blocks (Causal self-attention + Feed-forward)
-        # We use EncoderBlock with a causal mask to implement GPT-style causal attention.
+        # We use EncoderBlock with a causal mask to implement GPT-style causal attention
         self.layers = nn.ModuleList([EncoderBlock(d_model, num_heads, d_ff, dropout) for _ in range(num_layers)])
         
         self.fc_out = nn.Linear(d_model, vocab_size)

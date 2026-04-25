@@ -83,7 +83,7 @@ def train():
         
         print(f"Epoch {epoch+1}/{num_epochs}, Loss: {avg_train_loss:.4f}, Val Acc S: {acc_s:.4f}, Val Acc C: {acc_c:.4f}")
 
-    # Save model weights
+    # Save model weight
     weights_path = os.path.join(base_path, 'models', 'encoder_weights.pt')
     torch.save(model.state_dict(), weights_path)
     print(f"Weights saved to {weights_path}")
