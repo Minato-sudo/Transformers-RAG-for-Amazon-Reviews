@@ -5,6 +5,29 @@ from torch.utils.data import DataLoader, TensorDataset
 from transformer_scratch import MultiTaskEncoder
 import os
 import matplotlib.pyplot as plt
+import math
+
+class WarmupCosineScheduler:
+    def __init__(self, optimizer, warmup_steps, total_steps, min_lr=1e-6):
+        self.optimizer = optimizer
+        self.warmup_steps = warmup_steps
+        self.total_steps = total_steps
+        self.min_lr = min_lr
+        self.current_step = 0
+        self.base_lr = optimizer.param_groups[0]['lr']
+    
+    def step(self):
+        self.current_step += 1
+        if self.current_step < self.warmup_steps:
+            lr = self.base_lr * (self.current_step / self.warmup_steps)
+        else:
+            progress = (self.current_step - self.warmup_steps) / \
+                      (self.total_steps - self.warmup_steps)
+            lr = self.min_lr + 0.5 * (self.base_lr - self.min_lr) * \
+                 (1 + math.cos(math.pi * progress))
+        
+        for group in self.optimizer.param_groups:
+            group['lr'] = lr
 
 def train():
     base_path = "/home/minato/Documents/NLP_Assignment_3"
@@ -24,17 +47,20 @@ def train():
     
     model = MultiTaskEncoder(
         vocab_size=len(vocab),
-        d_model=128,
-        num_heads=4,
+        d_model=256,
+        num_heads=8,
         d_ff=512,
-        num_layers=2,
+        num_layers=4,
         dropout=0.1
     ).to(device)
     
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
+    optimizer = optim.AdamW(model.parameters(), lr=3e-4, weight_decay=0.01)
     
-    num_epochs = 5
+    num_epochs = 30
+    total_steps = len(train_loader) * num_epochs
+    scheduler = WarmupCosineScheduler(optimizer, warmup_steps=500, total_steps=total_steps)
+    
     train_losses = []
     val_accuracies_s = []
     val_accuracies_c = []
@@ -50,10 +76,12 @@ def train():
             
             loss_s = criterion(s_logits, batch_Ys)
             loss_c = criterion(c_logits, batch_Yc)
-            loss = loss_s + loss_c
+            loss = loss_s + 0.5 * loss_c
             
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+            scheduler.step()
             total_loss += loss.item()
             
         avg_train_loss = total_loss / len(train_loader)

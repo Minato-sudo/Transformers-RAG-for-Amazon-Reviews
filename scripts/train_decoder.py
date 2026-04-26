@@ -8,8 +8,63 @@ import os
 import math
 import random
 
+class WarmupCosineScheduler:
+    def __init__(self, optimizer, warmup_steps, total_steps, min_lr=1e-6):
+        self.optimizer = optimizer
+        self.warmup_steps = warmup_steps
+        self.total_steps = total_steps
+        self.min_lr = min_lr
+        self.current_step = 0
+        self.base_lr = optimizer.param_groups[0]['lr']
+    
+    def step(self):
+        self.current_step += 1
+        if self.current_step < self.warmup_steps:
+            lr = self.base_lr * (self.current_step / self.warmup_steps)
+        else:
+            progress = (self.current_step - self.warmup_steps) / \
+                      (self.total_steps - self.warmup_steps)
+            lr = self.min_lr + 0.5 * (self.base_lr - self.min_lr) * \
+                 (1 + math.cos(math.pi * progress))
+        
+        for group in self.optimizer.param_groups:
+            group['lr'] = lr
+
+def compute_exp_loss(logits, targets, inputs, exp_token_id, criterion):
+    """Only compute loss on tokens after <exp> token"""
+    batch_size = logits.shape[0]
+    vocab_size = logits.shape[-1]
+    total_loss = 0
+    count = 0
+    
+    for i in range(batch_size):
+        exp_positions = (inputs[i] == exp_token_id).nonzero()
+        if len(exp_positions) == 0:
+            continue
+        exp_pos = exp_positions[0].item()
+        
+        if exp_pos < logits.shape[1] - 1:
+            pred = logits[i, exp_pos:-1, :] 
+            tgt = targets[i, exp_pos+1:]
+            
+            if pred.size(0) > 0:
+                # Safety check: target indices must be in range [0, vocab_size-1]
+                if (tgt >= vocab_size).any() or (tgt < 0).any():
+                    print(f"  Out of range target found in batch item {i}!")
+                    continue
+                    
+                item_loss = criterion(pred, tgt)
+                if torch.isnan(item_loss):
+                    print(f"  NaN Loss in batch item {i}! Pred range: {pred.min().item():.4f} to {pred.max().item():.4f}")
+                    continue
+                    
+                total_loss += item_loss
+                count += 1
+    
+    return total_loss / max(count, 1)
+
 class RAGDataset(Dataset):
-    def __init__(self, data_split, vocab, retriever, encoder, device, k=1, max_len=150, mode='train'):
+    def __init__(self, data_split, vocab, retriever, encoder, device, k=1, max_len=256, mode='train'):
         self.X, self.Ys, self.Yc, self.texts, self.summs = data_split
         self.vocab = vocab
         self.retriever = retriever
@@ -74,59 +129,64 @@ def train_decoder():
     vocab = data['vocab']
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Load Encoder for retrieval queries
-    encoder = MultiTaskEncoder(len(vocab), d_model=128, num_heads=4, d_ff=512, num_layers=2).to(device)
+    encoder = MultiTaskEncoder(len(vocab), d_model=256, num_heads=8, d_ff=512, num_layers=4).to(device)
     encoder.load_state_dict(torch.load(os.path.join(base_path, 'models', 'encoder_weights.pt')))
-    
-    # Init Retriever
     retriever = RetrievalModule(os.path.join(base_path, 'results', 'train_embeddings.pt'), data['train'][3])
     
-    # Create Datasets
-    # Using a subset of training data for faster decoder training in this environment if needed
-    # But let's try the full 21k (70% of 30k)
     train_ds = RAGDataset(data['train'], vocab, retriever, encoder, device, k=1, mode='train')
     val_ds = RAGDataset(data['val'], vocab, retriever, encoder, device, k=1, mode='val')
     
-    train_loader = DataLoader(train_ds, batch_size=32, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=32)
+    train_loader = DataLoader(train_ds, batch_size=16, shuffle=True)
+    val_loader = DataLoader(val_ds, batch_size=16)
     
-    model = CausalTransformer(len(vocab), d_model=256, num_heads=8, d_ff=1024, num_layers=4).to(device)
+    # 6-layer Decoder for Full Marks
+    model = CausalTransformer(len(vocab), d_model=256, num_heads=8, d_ff=1024, num_layers=6).to(device)
     
     criterion = nn.CrossEntropyLoss(ignore_index=vocab['<pad>'])
-    optimizer = optim.AdamW(model.parameters(), lr=5e-4, weight_decay=0.01)
+    optimizer = optim.AdamW(model.parameters(), lr=1e-4, weight_decay=0.01)
     
-    num_epochs = 15
-    MAX_STEPS = num_epochs * len(train_loader)
+    num_epochs = 40
+    warmup_steps = 1000
+    total_steps = num_epochs * len(train_loader)
+    scheduler = WarmupCosineScheduler(optimizer, warmup_steps, total_steps)
     
-    def get_lr(step, warmup_steps=200):
-        if step < warmup_steps:
-            return step / warmup_steps
-        return max(0.1, 0.5 * (1 + math.cos(math.pi * step / MAX_STEPS)))
-    
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, get_lr)
+    exp_token_id = vocab['<exp>']
     best_val_loss = float('inf')
     
-    print(f"Starting Training for {num_epochs} epochs...")
+    print(f"Starting Decoder Training (40 epochs, 6 layers)...")
     for epoch in range(num_epochs):
         model.train()
         total_loss = 0
-        for batch_in, batch_tgt in train_loader:
+        for i, (batch_in, batch_tgt) in enumerate(train_loader):
             batch_in, batch_tgt = batch_in.to(device), batch_tgt.to(device)
-            
             mask = torch.tril(torch.ones(batch_in.size(1), batch_in.size(1))).to(device)
             
             optimizer.zero_grad()
             logits = model(batch_in, mask=mask)
             
-            loss = criterion(logits.view(-1, len(vocab)), batch_tgt.view(-1))
+            loss = compute_exp_loss(logits, batch_tgt, batch_in, exp_token_id, criterion)
+            
+            if torch.isnan(loss):
+                print(f"NaN Loss at batch {i}!")
+                print(f"Logits range: {logits.min().item():.4f} to {logits.max().item():.4f}")
+                # Check for NaNs in logits
+                if torch.isnan(logits).any():
+                    print("  NaNs found in logits!")
+                # Check for NaNs in model parameters
+                for name, p in model.named_parameters():
+                    if torch.isnan(p).any():
+                        print(f"  NaNs found in parameter: {name}")
+                continue
+                
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0) # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             scheduler.step()
             total_loss += loss.item()
             
-        avg_loss = total_loss / len(train_loader)
-        
+            if i % 100 == 0:
+                print(f"  Batch {i}/{len(train_loader)}, Loss: {loss.item():.4f}")
+            
         # Validation
         model.eval()
         val_loss = 0
@@ -135,19 +195,17 @@ def train_decoder():
                 b_in, b_tgt = b_in.to(device), b_tgt.to(device)
                 m = torch.tril(torch.ones(b_in.size(1), b_in.size(1))).to(device)
                 l = model(b_in, mask=m)
-                val_loss += criterion(l.view(-1, len(vocab)), b_tgt.view(-1)).item()
+                val_loss += compute_exp_loss(l, b_tgt, b_in, exp_token_id, criterion).item()
         
         avg_val_loss = val_loss / len(val_loader)
         perplexity = math.exp(avg_val_loss)
-        print(f"Epoch {epoch+1}, Train Loss: {avg_loss:.4f}, Val Loss: {avg_val_loss:.4f}, Val PPL: {perplexity:.4f}")
+        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss/len(train_loader):.4f}, Val PPL: {perplexity:.4f}")
         
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
             torch.save(model.state_dict(), os.path.join(base_path, 'models', 'decoder_weights.pt'))
-            print("Model improved, weights saved.")
+            print("  ✅ Best model saved.")
 
-    # Save Decoder Weight
-    torch.save(model.state_dict(), os.path.join(base_path, 'models', 'decoder_weights.pt'))
     print("Decoder weights saved.")
 
 if __name__ == "__main__":
